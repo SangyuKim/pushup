@@ -43,6 +43,30 @@
   #lock .dot{width:8px;height:8px;border-radius:50%;background:#555;}
   #lock.on .dot{background:var(--good);box-shadow:0 0 8px var(--good);}
 
+  /* 오늘 누적 기록 */
+  #today{position:absolute;z-index:3;left:14px;top:calc(12px + env(safe-area-inset-top));
+    font-size:11px;letter-spacing:.06em;color:var(--muted);cursor:pointer;}
+  #today b{color:var(--text);font-variant-numeric:tabular-nums;}
+
+  /* 기록 패널 */
+  #history{position:absolute;inset:0;z-index:10;background:#000c;display:none;
+    justify-content:center;align-items:center;padding:24px;}
+  #history.show{display:flex;}
+  .hist-card{width:100%;max-width:360px;max-height:80%;display:flex;flex-direction:column;
+    background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden;}
+  .hist-head{display:flex;justify-content:space-between;align-items:center;
+    padding:16px 16px 12px;font-size:16px;font-weight:700;}
+  .hist-head .btn{flex:none;padding:8px 16px;}
+  .hist-streak{padding:0 16px 12px;color:var(--muted);font-size:13px;}
+  .hist-streak b{color:var(--accent);font-size:18px;font-variant-numeric:tabular-nums;}
+  #histList{overflow-y:auto;border-top:1px solid var(--line);}
+  .hist-row{display:flex;justify-content:space-between;padding:12px 16px;
+    border-bottom:1px solid var(--line);font-size:14px;}
+  .hist-row .d{color:var(--muted);}
+  .hist-row .v{font-variant-numeric:tabular-nums;}
+  .hist-row.today{background:#f5a62311;}
+  .hist-empty{padding:24px 16px;text-align:center;color:var(--muted);font-size:13px;}
+
   /* 밝기 막대 */
   #meter{position:absolute;z-index:3;left:16px;right:16px;bottom:14px;height:46px;
     background:#0008;border:1px solid var(--line);border-radius:12px;overflow:hidden;}
@@ -64,6 +88,10 @@
     background:var(--bg);color:var(--text);font-size:14px;font-weight:600;}
   .btn.reset{color:var(--muted);}
   .btn.stop{color:#e2574c;border-color:#5a2d2a;}
+  .step{width:40px;height:40px;border-radius:10px;border:1px solid var(--line);
+    background:var(--bg);color:var(--text);font-size:20px;font-weight:700;line-height:1;}
+  #goal-val{min-width:64px;text-align:center;font-variant-numeric:tabular-nums;
+    color:var(--text);font-size:15px;}
   #sens-val{min-width:40px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text);font-size:13px;}
 
   /* 시작 게이트 */
@@ -85,6 +113,16 @@
     <div id="count">0</div>
     <div id="state">대기</div>
     <div id="lock"><span class="dot"></span><span id="lockTxt">화면유지 꺼짐</span></div>
+    <div id="today">오늘 <b id="todayReps">0</b>회 · <b id="todaySets">0</b>세트 <span style="color:var(--accent)">기록 ›</span></div>
+
+    <!-- 기록 패널 -->
+    <div id="history">
+      <div class="hist-card">
+        <div class="hist-head"><span>운동 기록</span><button class="btn" id="histClose">닫기</button></div>
+        <div class="hist-streak">연속 <b id="streakNum">0</b>일</div>
+        <div id="histList"></div>
+      </div>
+    </div>
 
     <div id="meter">
       <div id="fill"></div>
@@ -108,6 +146,13 @@
       <input type="range" id="sens" min="5" max="60" value="25" />
       <span id="sens-val">25%</span>
     </div>
+    <div class="row">
+      <label>목표</label>
+      <button class="step" id="goalDown">−</button>
+      <span id="goal-val">20회</span>
+      <button class="step" id="goalUp">+</button>
+      <span style="flex:1"></span>
+    </div>
     <div class="btns">
       <button class="btn" id="flip">전/후면</button>
       <button class="btn reset" id="reset">리셋</button>
@@ -127,6 +172,13 @@
   const errEl   = document.getElementById("err");
   const lockEl  = document.getElementById("lock");
   const lockTxt = document.getElementById("lockTxt");
+  const todayRepsEl = document.getElementById("todayReps");
+  const todaySetsEl = document.getElementById("todaySets");
+  const goalVal = document.getElementById("goal-val");
+  const todayEl = document.getElementById("today");
+  const historyEl = document.getElementById("history");
+  const histList = document.getElementById("histList");
+  const streakNum = document.getElementById("streakNum");
 
   // 밝기 샘플링용 작은 캔버스
   const c = document.createElement("canvas");
@@ -139,6 +191,74 @@
   let isCovered = false;
   let sensitivity = 0.25;   // 베이스라인 대비 이만큼 어두워지면 '가림'
   let running = false;
+  let goal = 20;            // 목표 횟수(0이면 목표 없음)
+  let pendingReset = false; // 목표 달성 후 다음 회차에서 카운트 0부터 새 세트
+
+  // ---- 운동 기록: 날짜별 영구 저장 (기기 localStorage) ----
+  const STORE_KEY = "coverCounterV2";
+  function keyOf(d){
+    return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+  }
+  function todayKey(){ return keyOf(new Date()); }
+
+  function loadStore(){
+    try{
+      const raw = localStorage.getItem(STORE_KEY);
+      if(raw){ const o = JSON.parse(raw); if(o && o.days) return o; }
+      // 구버전(하루치) 데이터가 있으면 이전
+      const old = localStorage.getItem("coverCounter");
+      if(old){ const o = JSON.parse(old);
+        if(o && o.date) return { days: { [o.date]: { reps:o.reps||0, sets:o.sets||0 } } }; }
+    }catch(e){}
+    return { days:{} };
+  }
+  let store = loadStore();
+  function saveStore(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(store)); }catch(e){} }
+
+  function today(){
+    const k = todayKey();
+    if(!store.days[k]) store.days[k] = { reps:0, sets:0 };
+    return store.days[k];
+  }
+  let log = today();                 // 오늘 기록 객체 참조
+  function rollDate(){ log = today(); } // 자정 넘기면 오늘 객체로 갱신
+  function renderToday(){ todayRepsEl.textContent = log.reps; todaySetsEl.textContent = log.sets; }
+  renderToday();
+
+  // 연속 운동 일수
+  function calcStreak(){
+    let s = 0; const d = new Date();
+    if(!(store.days[todayKey()] && store.days[todayKey()].reps > 0)) d.setDate(d.getDate()-1); // 오늘 아직 0이면 어제부터
+    while(true){
+      const day = store.days[keyOf(d)];
+      if(day && day.reps > 0){ s++; d.setDate(d.getDate()-1); } else break;
+    }
+    return s;
+  }
+
+  // 기록 패널 렌더 + 열고 닫기
+  function openHistory(){
+    streakNum.textContent = calcStreak();
+    const keys = Object.keys(store.days).filter(k=>store.days[k].reps>0).sort().reverse();
+    if(!keys.length){
+      histList.innerHTML = '<div class="hist-empty">아직 기록이 없어요.</div>';
+    } else {
+      const tk = todayKey();
+      histList.innerHTML = keys.map(k=>{
+        const v = store.days[k];
+        const cls = k === tk ? "hist-row today" : "hist-row";
+        const label = k === tk ? "오늘" : k.slice(5).replace("-","/");
+        return `<div class="${cls}"><span class="d">${label}</span><span class="v">${v.reps}회 · ${v.sets}세트</span></div>`;
+      }).join("");
+    }
+    historyEl.classList.add("show");
+  }
+  todayEl.addEventListener("click", openHistory);
+  document.getElementById("histClose").addEventListener("click", ()=>historyEl.classList.remove("show"));
+  historyEl.addEventListener("click", (e)=>{ if(e.target === historyEl) historyEl.classList.remove("show"); });
+
+  function renderGoal(){ goalVal.textContent = goal > 0 ? goal + "회" : "없음"; }
+  renderGoal();
 
   // ---- 오디오 ----
   let audioCtx = null;
@@ -158,6 +278,22 @@
       g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
       o.connect(g); g.connect(audioCtx.destination);
       o.start(); o.stop(audioCtx.currentTime+dur);
+    }catch(e){}
+  }
+  // 목표 달성 축하 멜로디 (도-미-솔-도)
+  function playMelody(){
+    try{
+      if(!audioCtx) return;
+      const notes=[523,659,784,1047], t0=audioCtx.currentTime;
+      notes.forEach((f,i)=>{
+        const o=audioCtx.createOscillator(), g=audioCtx.createGain(), t=t0+i*0.15;
+        o.type="square"; o.frequency.value=f;
+        g.gain.setValueAtTime(0.001,t);
+        g.gain.exponentialRampToValueAtTime(0.25,t+0.02);
+        g.gain.exponentialRampToValueAtTime(0.001,t+0.17);
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start(t); o.stop(t+0.2);
+      });
     }catch(e){}
   }
 
@@ -213,10 +349,23 @@
       // 상태 머신: 내려가서 가려지는 '순간' 카운트+소리
       if(!isCovered && b < downThresh){
         isCovered = true;
-        stateEl.textContent = "가림"; stateEl.classList.add("covered");
+        stateEl.classList.add("covered");
+        rollDate();
+        if(pendingReset){ count = 0; pendingReset = false; } // 목표 달성 후 새 세트 시작
         count++; countEl.textContent = count;
         countEl.classList.remove("flash"); void countEl.offsetWidth; countEl.classList.add("flash");
-        beep(2000);
+        log.reps++;
+
+        if(goal > 0 && count >= goal){     // 목표 달성
+          playMelody();
+          log.sets++;
+          pendingReset = true;
+          stateEl.textContent = "세트 완료!";
+        } else {
+          beep(2000);
+          stateEl.textContent = "가림";
+        }
+        saveStore(); renderToday();
       } else if(isCovered && b > upThresh){
         isCovered = false;
         stateEl.textContent = "대기"; stateEl.classList.remove("covered");
@@ -269,9 +418,17 @@
   });
 
   document.getElementById("reset").addEventListener("click", ()=>{
-    count = 0; isCovered = false; countEl.textContent = "0";
+    count = 0; isCovered = false; pendingReset = false; countEl.textContent = "0";
     stateEl.textContent = "대기"; stateEl.classList.remove("covered");
     beep(1200);
+  });
+
+  // 목표 조절 (0 = 없음, 5씩, 최대 100)
+  document.getElementById("goalUp").addEventListener("click", ()=>{
+    goal = Math.min(100, goal + 5); renderGoal();
+  });
+  document.getElementById("goalDown").addEventListener("click", ()=>{
+    goal = Math.max(0, goal - 5); renderGoal();
   });
 
   // 종료: 카메라·화면유지 해제하고 시작 화면으로
