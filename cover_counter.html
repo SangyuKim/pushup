@@ -210,16 +210,16 @@
       const downThresh = baseline * (1 - sensitivity);   // 이보다 어두우면 가림
       const upThresh   = baseline * (1 - sensitivity*0.5); // 다시 이보다 밝아야 해제(떨림 방지)
 
-      // 상태 머신
+      // 상태 머신: 내려가서 가려지는 '순간' 카운트+소리
       if(!isCovered && b < downThresh){
         isCovered = true;
         stateEl.textContent = "가림"; stateEl.classList.add("covered");
-      } else if(isCovered && b > upThresh){
-        isCovered = false;
-        stateEl.textContent = "대기"; stateEl.classList.remove("covered");
         count++; countEl.textContent = count;
         countEl.classList.remove("flash"); void countEl.offsetWidth; countEl.classList.add("flash");
         beep(2000);
+      } else if(isCovered && b > upThresh){
+        isCovered = false;
+        stateEl.textContent = "대기"; stateEl.classList.remove("covered");
       }
 
       // 시각화: 막대는 현재 밝기, 세로선은 임계값 위치(베이스라인 대비 비율)
